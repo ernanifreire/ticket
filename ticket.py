@@ -1,80 +1,138 @@
 import streamlit as st
 import PyPDF2
 import google.generativeai as genai
+from google.generativeai.types import RequestOptions
 import pandas as pd
 import io
 
-st.set_page_config(page_title="Analisador de Tickets", layout="wide")
+# --- CONFIGURAÇÃO DA PÁGINA ---
+st.set_page_config(page_title="Analisador de Tickets IA", layout="wide")
 
-st.title("📊 Analisador de Tickets (Versão Estável 2026)")
+st.title("📊 Analisador Estratégico de Tickets (Versão 2026)")
+st.markdown("""
+Esta ferramenta processa históricos de chat (PDF), extrai dados de SLA e identifica causas raízes.
+""")
 
-# --- CONFIGURAÇÃO DA API ---
-# Usando st.sidebar para organizar
+# --- BARRA LATERAL (CONFIGURAÇÕES) ---
 with st.sidebar:
+    st.header("Configuração")
     api_key = st.text_input("Insira sua Gemini API Key:", type="password")
-    st.info("Obtenha sua chave em: aistudio.google.com")
+    st.info("Obtenha sua chave gratuita em: aistudio.google.com")
+    
+    st.divider()
+    st.markdown("### Instruções")
+    st.write("1. Insira a chave da API.")
+    st.write("2. Faça upload de até 20 PDFs.")
+    st.write("3. Clique em Iniciar Análise.")
 
+# --- INICIALIZAÇÃO DA IA ---
+model = None
 if api_key:
     try:
-        # FORÇANDO A API V1 (ESTÁVEL) E O TRANSPORTE REST
-        genai.configure(api_key=api_key, transport='rest')
+        # Forçamos a configuração para usar a API v1 estável
+        genai.configure(api_key=api_key)
         
-        # Testando o modelo mais provável em 2026
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        
-        # BOTÃO DE DIAGNÓSTICO (Caso o erro persista)
-        if st.button("🔍 Testar Conexão/Modelos"):
-            models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            st.write("Modelos disponíveis na sua conta:")
-            st.code(models)
-
+        # O SEGREDO: RequestOptions força a versão 'v1' e evita o erro 404 (v1beta)
+        model = genai.GenerativeModel(
+            model_name='gemini-1.5-flash',
+            request_options=RequestOptions(api_version='v1')
+        )
+        st.sidebar.success("Conectado com sucesso (API v1)")
     except Exception as e:
-        st.error(f"Erro na configuração: {e}")
+        st.sidebar.error(f"Erro ao conectar: {e}")
 
-    # --- UPLOAD E PROCESSAMENTO ---
-    uploaded_files = st.file_uploader("Suba seus PDFs", type="pdf", accept_multiple_files=True)
+# --- INTERFACE DE UPLOAD ---
+uploaded_files = st.file_uploader("Arraste seus arquivos PDF aqui", type="pdf", accept_multiple_files=True)
 
-    if uploaded_files and st.button("🚀 Iniciar Análise"):
+if uploaded_files and model:
+    if st.button("🚀 Iniciar Análise Profunda"):
         lista_dados = []
         progress_bar = st.progress(0)
+        status_text = st.empty()
 
         for i, file in enumerate(uploaded_files):
+            status_text.text(f"Processando: {file.name}")
+            
             try:
-                # Extrair texto do PDF
+                # 1. Extração de Texto do PDF
                 reader = PyPDF2.PdfReader(file)
-                texto = "".join([page.extract_text() for page in reader.pages])
+                texto_ticket = ""
+                for page in reader.pages:
+                    content = page.extract_text()
+                    if content:
+                        texto_ticket += content
 
-                # Prompt simplificado para evitar erros de parsing
+                # 2. Prompt Estruturado para Logs de Chat
                 prompt = f"""
-                Analise este ticket e retorne APENAS uma linha com os campos separados por ponto e vírgula (;).
-                Campos: ID; Data; SLA; Problema; Causa Raiz; Resolução
-                Ticket: {texto[:5000]} 
-                """
-                # (Limitamos a 5000 caracteres para não estourar o limite de envio inicial)
+                Você é um especialista em suporte técnico. Analise o LOG DE CONVERSA abaixo.
+                Ignore mensagens automáticas e identifique:
+                - ID do Ticket (se houver)
+                - Data de Início
+                - Tempo de SLA (duração total)
+                - O Problema Real relatado pelo cliente
+                - A Causa Raiz (por que o problema aconteceu?)
+                - A Resolução (como foi resolvido?)
 
+                Retorne APENAS uma linha com os campos separados por ponto e vírgula (;).
+                Formato: ID;Data;SLA;Problema;Causa Raiz;Resolucao
+
+                Texto do Ticket:
+                {texto_ticket[:10000]}
+                """
+
+                # 3. Chamada da IA com tratamento de erro específico
                 response = model.generate_content(prompt)
                 
-                # Tratamento da resposta
-                linha = response.text.strip().split(";")
-                if len(linha) >= 5:
-                    lista_dados.append(linha)
+                # Limpeza básica da resposta para evitar quebras no CSV
+                resultado = response.text.replace('\n', ' ').strip()
+                dados_linha = resultado.split(";")
+                
+                # Garante que temos o número correto de colunas
+                if len(dados_linha) >= 6:
+                    lista_dados.append(dados_linha[:6])
                 else:
-                    lista_dados.append([file.name, "Erro formatacao", "-", "-", "-", "-"])
+                    # Caso a IA não consiga formatar, tentamos salvar o nome do arquivo e o erro
+                    lista_dados.append([file.name, "Erro", "Erro", "Formato Inválido", "N/A", "N/A"])
 
             except Exception as e:
                 st.error(f"Erro no arquivo {file.name}: {e}")
             
             progress_bar.progress((i + 1) / len(uploaded_files))
 
+        status_text.text("Análise Concluída!")
+
+        # --- EXIBIÇÃO DOS RESULTADOS ---
         if lista_dados:
             df = pd.DataFrame(lista_dados, columns=['ID', 'Data', 'SLA', 'Problema', 'Causa Raiz', 'Resolução'])
-            st.subheader("📋 Resultado")
-            st.dataframe(df)
             
-            # Download Excel
+            st.subheader("📋 Relatório Consolidado")
+            st.dataframe(df, use_container_width=True)
+
+            # Geração do arquivo Excel para Download
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df.to_excel(writer, index=False)
-            st.download_button("📥 Baixar Excel", output.getvalue(), "relatorio.xlsx")
+                df.to_excel(writer, index=False, sheet_name='Tickets')
+            
+            st.download_button(
+                label="📥 Baixar Relatório em Excel",
+                data=output.getvalue(),
+                file_name="analise_causa_raiz_tickets.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+            # --- INSIGHTS ESTRATÉGICOS ---
+            st.divider()
+            st.subheader("💡 Análise de Causa Raiz (IA)")
+            causas_texto = " ".join(df['Causa Raiz'].astype(str).tolist())
+            insight_prompt = f"Com base nessas causas raízes de tickets, resuma os 3 principais problemas e sugira ações para eliminá-los: {causas_texto}"
+            
+            try:
+                insight_res = model.generate_content(insight_prompt)
+                st.info(insight_res.text)
+            except:
+                st.write("Não foi possível gerar insights automáticos agora.")
+
+elif not model and api_key:
+    st.info("Aguardando configuração da API...")
 else:
-    st.warning("Aguardando API Key...")
+    st.warning("👈 Insira sua API Key na barra lateral para começar.")
