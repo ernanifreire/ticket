@@ -1,34 +1,40 @@
 import streamlit as st
 import PyPDF2
-import google.generativeai as genai
 import pandas as pd
 import io
-import os
+import requests
+import json
 
-# --- FORÇAR API ESTÁVEL (V1) ---
-os.environ["GOOGLE_GENERATIVE_AI_API_VERSION"] = "v1"
-
+# --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Analisador de Tickets", layout="wide")
-st.title("📊 Analisador Estratégico de Tickets")
+st.title("📊 Analisador Estratégico de Tickets (Conexão Direta v1)")
 
 with st.sidebar:
     api_key = st.text_input("Insira sua Gemini API Key:", type="password")
     st.info("Obtenha sua chave em: aistudio.google.com")
 
-if api_key:
-    try:
-        # Configuração com transporte REST para evitar erros de rede
-        genai.configure(api_key=api_key, transport='rest')
-        
-        # Usamos o nome mais simples possível
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        
-        # Teste de conexão real antes de começar
-        model.generate_content("test", generation_config={"max_output_tokens": 1})
-        st.sidebar.success("Conectado à API Estável!")
-    except Exception as e:
-        st.sidebar.error(f"Erro de Conexão: {e}")
+# --- FUNÇÃO DE CHAMADA DIRETA À API (SEM BIBLIOTECA BUGADA) ---
+def chamar_gemini_direto(api_key, prompt_text):
+    # Forçamos a URL da versão estável V1
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
+    
+    payload = {
+        "contents": [{
+            "parts": [{"text": prompt_text}]
+        }]
+    }
+    
+    headers = {'Content-Type': 'application/json'}
+    
+    response = requests.post(url, headers=headers, data=json.dumps(payload))
+    
+    if response.status_code == 200:
+        return response.json()['candidates'][0]['content']['parts'][0]['text']
+    else:
+        raise Exception(f"Erro na API ({response.status_code}): {response.text}")
 
+# --- LÓGICA DO APP ---
+if api_key:
     uploaded_files = st.file_uploader("Suba seus PDFs", type="pdf", accept_multiple_files=True)
 
     if uploaded_files and st.button("🚀 Iniciar Análise"):
@@ -37,26 +43,26 @@ if api_key:
 
         for i, file in enumerate(uploaded_files):
             try:
+                # 1. Extração do PDF
                 reader = PyPDF2.PdfReader(file)
-                texto = ""
+                texto_completo = ""
                 for page in reader.pages:
-                    texto += page.extract_text() or ""
+                    texto_completo += page.extract_text() or ""
 
-                # Prompt focado em extração de dados de suporte
+                # 2. Prompt de Extração
                 prompt = f"""
-                Analise este ticket de suporte e retorne APENAS uma linha CSV separada por ponto e vírgula (;).
+                Analise este ticket e retorne APENAS uma linha CSV separada por ponto e vírgula (;).
                 Campos: ID; Data; SLA; Problema; Causa_Raiz; Resolucao
-                Ticket: {texto[:8000]}
+                Ticket: {texto_ticket[:8000] if 'texto_ticket' in locals() else texto_completo[:8000]}
                 """
 
-                response = model.generate_content(prompt)
+                # 3. Chamada Direta
+                resultado_ia = chamar_gemini_direto(api_key, prompt)
                 
-                # Tratamento da resposta para evitar quebras
-                resultado = response.text.replace('\n', ' ').strip()
-                colunas = resultado.split(";")
-                
-                if len(colunas) >= 5:
-                    lista_dados.append(colunas[:6])
+                # 4. Tratamento dos dados
+                linha = resultado_ia.replace('\n', ' ').strip().split(";")
+                if len(linha) >= 5:
+                    lista_dados.append(linha[:6])
                 else:
                     lista_dados.append([file.name, "Erro de formato", "-", "-", "-", "-"])
 
@@ -77,4 +83,4 @@ if api_key:
             st.download_button("📥 Baixar Excel", output.getvalue(), "relatorio_final.xlsx")
 
 else:
-    st.warning("Insira a API Key para ativar o sistema.")
+    st.warning("Insira a API Key na barra lateral.")
