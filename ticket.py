@@ -4,109 +4,77 @@ import google.generativeai as genai
 import pandas as pd
 import io
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Analisador de Tickets IA", layout="wide")
+st.set_page_config(page_title="Analisador de Tickets", layout="wide")
 
-st.title("📊 Analisador Estratégico de Tickets")
-st.markdown("""
-Sobe os teus PDFs de atendimento e eu vou extrair os dados, calcular o SLA, 
-identificar causas raízes e gerar uma planilha pronta para download.
-""")
+st.title("📊 Analisador de Tickets (Versão Estável 2026)")
 
-# --- CONFIGURAÇÃO DA IA ---
-# Dica: Em produção (Streamlit Cloud), use st.secrets para a chave
-api_key = st.sidebar.text_input("AIzaSyDkTKn3uiGfit05HX7QpL8mbR-0SZKUdQ8", type="password")
+# --- CONFIGURAÇÃO DA API ---
+# Usando st.sidebar para organizar
+with st.sidebar:
+    api_key = st.text_input("Insira sua Gemini API Key:", type="password")
+    st.info("Obtenha sua chave em: aistudio.google.com")
 
 if api_key:
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-pro')
+    try:
+        # FORÇANDO A API V1 (ESTÁVEL) E O TRANSPORTE REST
+        genai.configure(api_key=api_key, transport='rest')
+        
+        # Testando o modelo mais provável em 2026
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        # BOTÃO DE DIAGNÓSTICO (Caso o erro persista)
+        if st.button("🔍 Testar Conexão/Modelos"):
+            models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            st.write("Modelos disponíveis na sua conta:")
+            st.code(models)
 
-    # --- UPLOAD DE ARQUIVOS ---
-    uploaded_files = st.file_uploader("Selecione os 20 PDFs de tickets", type="pdf", accept_multiple_files=True)
+    except Exception as e:
+        st.error(f"Erro na configuração: {e}")
 
-    if uploaded_files:
-        if st.button("🚀 Iniciar Análise Profunda"):
-            lista_dados = []
-            
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+    # --- UPLOAD E PROCESSAMENTO ---
+    uploaded_files = st.file_uploader("Suba seus PDFs", type="pdf", accept_multiple_files=True)
 
-            for i, file in enumerate(uploaded_files):
-                status_text.text(f"Lendo arquivo: {file.name}...")
+    if uploaded_files and st.button("🚀 Iniciar Análise"):
+        lista_dados = []
+        progress_bar = st.progress(0)
+
+        for i, file in enumerate(uploaded_files):
+            try:
+                # Extrair texto do PDF
+                reader = PyPDF2.PdfReader(file)
+                texto = "".join([page.extract_text() for page in reader.pages])
+
+                # Prompt simplificado para evitar erros de parsing
+                prompt = f"""
+                Analise este ticket e retorne APENAS uma linha com os campos separados por ponto e vírgula (;).
+                Campos: ID; Data; SLA; Problema; Causa Raiz; Resolução
+                Ticket: {texto[:5000]} 
+                """
+                # (Limitamos a 5000 caracteres para não estourar o limite de envio inicial)
+
+                response = model.generate_content(prompt)
                 
-                # 1. Extração de Texto do PDF
-                try:
-                    reader = PyPDF2.PdfReader(file)
-                    texto_completo = ""
-                    for page in reader.pages:
-                        texto_completo += page.extract_text()
+                # Tratamento da resposta
+                linha = response.text.strip().split(";")
+                if len(linha) >= 5:
+                    lista_dados.append(linha)
+                else:
+                    lista_dados.append([file.name, "Erro formatacao", "-", "-", "-", "-"])
 
-                    # 2. Prompt Estruturado para a IA
-                    prompt = f"""
-                    Analise o seguinte log de ticket de suporte e extraia as informações estritamente no formato JSON:
-                    Campos: 
-                    - id_ticket: (número ou ID)
-                    - inicio: (data/hora de abertura)
-                    - tmr: (tempo médio de resposta, se houver)
-                    - sla_total: (tempo total de resolução)
-                    - problema: (resumo do problema do cliente)
-                    - causa_raiz: (o motivo real que gerou o problema)
-                    - resolucao: (como foi resolvido)
-                    - categoria: (ex: Bug, Dúvida, Financeiro, Técnico)
-
-                    Texto do Ticket:
-                    {texto_completo}
-                    """
-
-                    # 3. Chamada da IA
-                    response = model.generate_content(prompt)
-                    
-                    # Limpeza simples para garantir que pegamos apenas o JSON (caso a IA mande markdown)
-                    res_text = response.text.replace("```json", "").replace("```", "").strip()
-                    
-                    # Converter string para dicionário (Simulado aqui por praticidade, o ideal é usar json.loads)
-                    # Para este MVP, vamos pedir um formato CSV simples para a IA facilitar:
-                    prompt_csv = f"Extraia os dados deste ticket: {texto_completo}. Retorne APENAS uma linha CSV com: ID;Início;TMR;SLA;Problema;Causa Raiz;Resolução;Categoria. Use ';' como separador."
-                    res_csv = model.generate_content(prompt_csv).text
-                    
-                    # Organizando os dados (Simulação de parsing rápido)
-                    dados_linha = res_csv.split(";")
-                    lista_dados.append(dados_linha)
-
-                except Exception as e:
-                    st.error(f"Erro ao processar {file.name}: {e}")
-                
-                progress_bar.progress((i + 1) / len(uploaded_files))
-
-            # --- EXIBIÇÃO E DOWNLOAD ---
-            st.success("✅ Análise concluída!")
+            except Exception as e:
+                st.error(f"Erro no arquivo {file.name}: {e}")
             
-            # Criando o DataFrame (Planilha)
-            df = pd.DataFrame(lista_dados, columns=['ID', 'Início', 'TMR', 'SLA', 'Problema', 'Causa Raiz', 'Resolução', 'Categoria'])
-            
-            st.subheader("📋 Visualização dos Dados")
-            st.dataframe(df, use_container_width=True)
+            progress_bar.progress((i + 1) / len(uploaded_files))
 
-            # Botão para baixar Excel
+        if lista_dados:
+            df = pd.DataFrame(lista_dados, columns=['ID', 'Data', 'SLA', 'Problema', 'Causa Raiz', 'Resolução'])
+            st.subheader("📋 Resultado")
+            st.dataframe(df)
+            
+            # Download Excel
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df.to_excel(writer, index=False, sheet_name='Tickets')
-            
-            st.download_button(
-                label="📥 Baixar Relatório em Excel",
-                data=output.getvalue(),
-                file_name="relatorio_tickets_ia.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-            # Insights de Causa Raiz
-            st.subheader("💡 Insights Sugeridos pela IA")
-            resumo_prompt = f"Com base nesses dados de causa raiz: {df['Causa Raiz'].tolist()}, quais os 3 pontos principais de melhoria?"
-            insight = model.generate_content(resumo_prompt)
-            st.info(insight.text)
-
+                df.to_excel(writer, index=False)
+            st.download_button("📥 Baixar Excel", output.getvalue(), "relatorio.xlsx")
 else:
-
-    st.warning("Por favor, insira sua API Key na barra lateral para começar.")
-
-
+    st.warning("Aguardando API Key...")
