@@ -3,10 +3,12 @@ import PyPDF2
 import google.generativeai as genai
 import pandas as pd
 import io
+import os
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
+# --- FORÇAR API ESTÁVEL (V1) ---
+os.environ["GOOGLE_GENERATIVE_AI_API_VERSION"] = "v1"
+
 st.set_page_config(page_title="Analisador de Tickets", layout="wide")
-
 st.title("📊 Analisador Estratégico de Tickets")
 
 with st.sidebar:
@@ -15,24 +17,19 @@ with st.sidebar:
 
 if api_key:
     try:
-        genai.configure(api_key=api_key)
+        # Configuração com transporte REST para evitar erros de rede
+        genai.configure(api_key=api_key, transport='rest')
         
-        # TENTATIVA 1: Nome padrão completo (costuma resolver o 404)
-        model = genai.GenerativeModel('models/gemini-1.5-flash')
+        # Usamos o nome mais simples possível
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
-        # Teste de conexão silencioso
-        try:
-            model.generate_content("Oi", generation_config={"max_output_tokens": 1})
-            st.sidebar.success("Conectado com Sucesso!")
-        except Exception:
-            # TENTATIVA 2: Se o Flash falhar, tentamos o Pro que é mais estável em algumas regiões
-            model = genai.GenerativeModel('models/gemini-1.5-pro')
-            st.sidebar.warning("Usando modelo Pro (Flash indisponível)")
-
+        # Teste de conexão real antes de começar
+        model.generate_content("test", generation_config={"max_output_tokens": 1})
+        st.sidebar.success("Conectado à API Estável!")
     except Exception as e:
-        st.error(f"Erro na configuração inicial: {e}")
+        st.sidebar.error(f"Erro de Conexão: {e}")
 
-    uploaded_files = st.file_uploader("Selecione seus PDFs", type="pdf", accept_multiple_files=True)
+    uploaded_files = st.file_uploader("Suba seus PDFs", type="pdf", accept_multiple_files=True)
 
     if uploaded_files and st.button("🚀 Iniciar Análise"):
         lista_dados = []
@@ -45,22 +42,23 @@ if api_key:
                 for page in reader.pages:
                     texto += page.extract_text() or ""
 
-                # Prompt otimizado para não gerar erros de caracteres
+                # Prompt focado em extração de dados de suporte
                 prompt = f"""
-                Analise este ticket e retorne os dados no formato CSV separado por ponto e vírgula (;).
+                Analise este ticket de suporte e retorne APENAS uma linha CSV separada por ponto e vírgula (;).
                 Campos: ID; Data; SLA; Problema; Causa_Raiz; Resolucao
                 Ticket: {texto[:8000]}
                 """
 
-                # Chamada da IA
                 response = model.generate_content(prompt)
                 
-                # Tratamento da resposta
-                linha = response.text.replace('\n', ' ').strip().split(";")
-                if len(linha) >= 5:
-                    lista_dados.append(linha[:6])
+                # Tratamento da resposta para evitar quebras
+                resultado = response.text.replace('\n', ' ').strip()
+                colunas = resultado.split(";")
+                
+                if len(colunas) >= 5:
+                    lista_dados.append(colunas[:6])
                 else:
-                    lista_dados.append([file.name, "Erro de extração", "-", "-", "-", "-"])
+                    lista_dados.append([file.name, "Erro de formato", "-", "-", "-", "-"])
 
             except Exception as e:
                 st.error(f"Erro no arquivo {file.name}: {e}")
@@ -69,12 +67,14 @@ if api_key:
 
         if lista_dados:
             df = pd.DataFrame(lista_dados, columns=['ID', 'Data', 'SLA', 'Problema', 'Causa Raiz', 'Resolução'])
-            st.subheader("📋 Resultado")
+            st.subheader("📋 Relatório Extraído")
             st.dataframe(df, use_container_width=True)
             
+            # Exportação Excel
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 df.to_excel(writer, index=False)
-            st.download_button("📥 Baixar Excel", output.getvalue(), "relatorio_tickets.xlsx")
+            st.download_button("📥 Baixar Excel", output.getvalue(), "relatorio_final.xlsx")
+
 else:
-    st.warning("Aguardando API Key na barra lateral...")
+    st.warning("Insira a API Key para ativar o sistema.")
