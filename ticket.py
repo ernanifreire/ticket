@@ -19,7 +19,7 @@ api_key = st.sidebar.text_input("AIzaSyDkTKn3uiGfit05HX7QpL8mbR-0SZKUdQ8", type=
 
 if api_key:
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    model = genai.GenerativeModel('gemini-1.5-flash-002')
 
     # --- UPLOAD DE ARQUIVOS ---
     uploaded_files = st.file_uploader("Selecione os 20 PDFs de tickets", type="pdf", accept_multiple_files=True)
@@ -108,3 +108,4 @@ if api_key:
 else:
 
     st.warning("Por favor, insira sua API Key na barra lateral para começar.")
+
